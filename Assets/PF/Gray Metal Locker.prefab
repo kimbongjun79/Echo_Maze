@@ -60,6 +60,10 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: -7635826562936255635, guid: e2c446b5dce79d94696b05ccba12fb6b, type: 3}
+      propertyPath: 'm_Materials.Array.data[0]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 54ab9329f38e56e4980ef39e540e604e, type: 2}
     - target: {fileID: 919132149155446097, guid: e2c446b5dce79d94696b05ccba12fb6b, type: 3}
       propertyPath: m_Name
       value: Gray Metal Locker

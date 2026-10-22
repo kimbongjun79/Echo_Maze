@@ -7,7 +7,7 @@ public class EchoMaze : MonoBehaviour
     static readonly float[] Hy = new float[256];
     public Material face, line;
     [Tooltip("비우면 기본 도형 사용. 캐비넷 피벗 = 바닥 중앙, 정면(+Z) = 통로 방향")]
-    public GameObject monsterPrefab, cabinetPrefab, itemPrefab;
+    public GameObject monsterPrefab, cabinetPrefab;
     [Range(0, 5)] public float echoIntensity = 1;
     [Range(0, 1)] public float echoContrast = .5f;
     public float echoContrastRange = 8;
@@ -121,6 +121,38 @@ public class EchoMaze : MonoBehaviour
     }
     Material Tint(Color c) { var m = new Material(line); m.SetColor("_Color", c); return m; }
 
+    static bool TryMountDirection(Vector2Int cell, out Vector3 direction)
+    {
+        direction = Vector3.zero;
+        foreach (var (x, z) in D)
+        {
+            if (!W[cell.x + x, cell.y + z]) continue;
+            direction = new Vector3(-x, 0, -z);
+            // Prefer a wall with open space directly in front, but any real adjacent wall is valid.
+            if (!W[cell.x - x, cell.y - z]) return true;
+        }
+        return direction != Vector3.zero;
+    }
+
+    static Vector2Int DisplayCell(Vector2Int source, bool[,] occupied)
+    {
+        if (TryMountDirection(source, out _)) return source;
+        var distances = Bfs(source, G * G);
+        int nearest = int.MaxValue;
+        var chosen = new Vector2Int(-1, -1);
+        foreach (var cell in Free)
+        {
+            if (occupied[cell.x, cell.y] || (cell.x == 1 && cell.y == 1)
+                || (cell.x == G - 2 && cell.y == G - 2)
+                || distances[cell.x, cell.y] >= nearest || !TryMountDirection(cell, out _)) continue;
+            chosen = cell;
+            nearest = distances[cell.x, cell.y];
+        }
+        if (chosen.x < 0)
+            throw new System.InvalidOperationException($"No unoccupied reachable wall-adjacent cell for item at {source}.");
+        return chosen;
+    }
+
     void Awake()
     {
         Over = false; Free.Clear(); Items.Clear(); Cabs.Clear();
@@ -155,22 +187,41 @@ public class EchoMaze : MonoBehaviour
         }
 
 
-        // 배치: I 아이템, C 캐비넷(열린 방향 반대쪽 벽에 붙임)
+        // Reserve every authored display/cabinet before relocation, so iteration order cannot overlap them.
+        // Relocation changes furniture positions only: W/Free and all navigation paths remain intact.
+        var occupied = new bool[G, G];
+        for (int z = 1; z < G - 1; z++)
+            for (int x = 1; x < G - 1; x++)
+            {
+                if (W[x, z]) continue;
+                Free.Add(new(x, z));
+                occupied[x, z] = x < mp[z].Length && (mp[z][x] == 'I' || mp[z][x] == 'C');
+            }
+
+        // I: wall-mounted displays; C: cabinets against the wall opposite their open direction.
         Color[] ic = { new(1, .87f, .2f), new(.2f, .87f, 1), new(.4f, 1, .4f), new(1, .4f, 1), new(1, .6f, .2f) };
+        // Tools/Echo Maze/Build Item Display generates a Resources prefab with serialized FBX references.
+        // Resources keeps the real stool/frame meshes and echo materials available in player builds.
+        var itemDisplay = Resources.Load<GameObject>("EchoItemDisplay");
         for (int z = 0; z < G; z++)
             for (int x = 0; x < G; x++)
             {
-                if (W[x, z]) continue; Free.Add(new(x, z));
+                if (W[x, z] || x >= mp[z].Length) continue;
                 var cc = new Vector3(x * C, 1, z * C);
                 if (mp[z][x] == 'I')
                 {
-                    // 아이템: 프리팹 또는 기본 도형, 자체 음파(EchoItem). 접촉은 거리 판정이므로 콜라이더 제거
+                    if (!itemDisplay) throw new System.InvalidOperationException("Run Tools/Echo Maze/Build Item Display before playing or building.");
+                    var cell = DisplayCell(new(x, z), occupied);
+                    occupied[cell.x, cell.y] = true;
+                    TryMountDirection(cell, out var dir);
+                    // Root is the actual wall surface. Prefab mesh rear faces are local Z=0,
+                    // frame center Y=1.65m, stool floor Y=0, and local +Z faces the corridor.
+                    var wallSurface = new Vector3(cell.x * C, 0, cell.y * C) - dir * (C * .5f);
+                    var stand = Instantiate(itemDisplay, wallSurface, Quaternion.LookRotation(dir));
+                    var item = stand.GetComponentInChildren<EchoItem>();
                     var icol = ic[Items.Count % ic.Length];
-                    var it = itemPrefab ? Instantiate(itemPrefab, cc, Quaternion.identity).transform : Prim(PrimitiveType.Cube, cc, Vector3.one * .35f, Tint(icol));
-                    if (!itemPrefab) it.rotation = Quaternion.Euler(45, 0, 45);
-                    foreach (var col in it.GetComponentsInChildren<Collider>()) Destroy(col);
-                    if (!it.GetComponent<EchoItem>()) it.gameObject.AddComponent<EchoItem>().color = icol;
-                    Items.Add(it);
+                    item.InitializeGem(icol);
+                    Items.Add(item.transform);
                 }
                 else if (mp[z][x] == 'C')
                 {
@@ -184,8 +235,8 @@ public class EchoMaze : MonoBehaviour
                 }
             }
         Total = Items.Count;
-        // 몬스터: 프리팹 또는 기본 구체. 접촉은 거리 판정이므로 콜라이더 제거
-        var mp0 = new Vector3((G - 2) * C, 1, (G - 2) * C);
+        // 모델 프리팹은 바닥 피벗, 기본 구체는 중심 높이 1. 접촉은 수평 거리 판정.
+        var mp0 = new Vector3((G - 2) * C, monsterPrefab ? 0 : 1, (G - 2) * C);
         var mo = monsterPrefab ? Instantiate(monsterPrefab, mp0, Quaternion.identity).transform : Prim(PrimitiveType.Sphere, mp0, Vector3.one * .6f, Tint(new Color(1, .15f, .15f)));
         foreach (var col in mo.GetComponentsInChildren<Collider>()) Destroy(col);
         if (!mo.GetComponent<EchoMonster>()) mo.gameObject.AddComponent<EchoMonster>();
